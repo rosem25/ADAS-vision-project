@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.env
+venv/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+
+# Large Files & Outputs
+uploads/
+*.mp4
+*.webm
+*.avi
+*.pt
+*.csv
+
+# Logs
+*.log
