@@ -184,18 +184,29 @@
     min-height: 300px;
   }
 
+  /* ---------- Legend ---------- */
+  .legend {
+    display: flex; gap: 12px; padding: 10px 14px;
+    background: var(--ink-950);
+    border-top: 1px solid var(--ink-800);
+    flex-wrap: wrap;
+    font-size: 0.75rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--paper-400); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+
   /* ---------- Readout rail ---------- */
   .readout-rail { display: flex; flex-direction: column; gap: 16px; }
   .readout-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(4, 1fr);
     gap: 12px;
   }
   .readout-cell {
     padding: 14px 14px 12px;
     border-top: 1px solid var(--ink-800);
   }
-  .readout-cell:nth-child(-n+2) { border-top: none; }
+  .readout-cell:nth-child(-n+4) { border-top: none; }
   .readout-cell .label {
     font-family: var(--mono);
     font-size: 0.66rem;
@@ -238,6 +249,11 @@
   }
   #gaugeReading b { color: var(--paper-100); font-size: 1rem; }
 
+  /* ---------- Slider ---------- */
+  .control-group { padding: 18px 14px 16px; border-top: 1px solid var(--ink-800); }
+  .control-label { font-family: var(--mono); font-size: 0.75rem; color: var(--paper-400); margin-bottom: 8px; display: flex; justify-content: space-between; }
+  input[type=range] { width: 100%; cursor: pointer; }
+
   /* ---------- Timeline (oscilloscope) ---------- */
   .timeline-panel { margin-top: 18px; }
   #timelineCanvas { width: 100%; height: 92px; display: block; }
@@ -273,6 +289,17 @@
   .flag-no { color: var(--paper-600); }
 
   .hidden { display: none; }
+
+  /* ---------- Download Actions ---------- */
+  .actions { margin-top: 18px; display: flex; gap: 12px; }
+  .btn {
+    padding: 10px 16px; background: var(--ink-800); color: var(--paper-100);
+    border: 1px solid var(--ink-700); border-radius: 6px; cursor: pointer;
+    font-family: var(--display); font-size: 0.9rem; font-weight: 500;
+    text-decoration: none; transition: background 0.15s;
+  }
+  .btn:hover { background: var(--ink-700); }
+  .btn.disabled { opacity: 0.5; pointer-events: none; }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: var(--ink-900); }
@@ -314,6 +341,14 @@
         <span id="frameCounter">frame 0</span>
       </div>
       <img id="streamImg" src="">
+      <div class="legend">
+        <span class="legend-item"><span class="swatch" style="background: #0096FF"></span>Car</span>
+        <span class="legend-item"><span class="swatch" style="background: #3264C8"></span>Truck</span>
+        <span class="legend-item"><span class="swatch" style="background: #3232C8"></span>Bus</span>
+        <span class="legend-item"><span class="swatch" style="background: #FFC800"></span>Person</span>
+        <span class="legend-item"><span class="swatch" style="background: #C83296"></span>Motorcycle</span>
+        <span class="legend-item"><span class="swatch" style="background: #96C832"></span>Bicycle</span>
+      </div>
     </div>
 
     <div class="panel readout-rail">
@@ -324,8 +359,16 @@
           <div class="value" id="mFrames">000000</div>
         </div>
         <div class="readout-cell warn">
-          <div class="label">Warnings</div>
+          <div class="label">Collisions</div>
           <div class="value" id="mWarnings">000000</div>
+        </div>
+        <div class="readout-cell">
+          <div class="label" style="color: var(--amber)">Lane Deps</div>
+          <div class="value" id="mLaneDeps" style="color: var(--amber)">000000</div>
+        </div>
+        <div class="readout-cell">
+          <div class="label">Avg FPS</div>
+          <div class="value" id="mFps">0.0</div>
         </div>
       </div>
       <div class="gauge-wrap">
@@ -336,6 +379,10 @@
                 stroke-dasharray="188.5" stroke-dashoffset="188.5"/>
         </svg>
         <div id="gaugeReading"><b id="gaugePct">0%</b> of frames flagged</div>
+      </div>
+      <div class="control-group">
+        <div class="control-label"><span>Min Confidence</span><span id="confVal">0.50</span></div>
+        <input type="range" id="confSlider" min="0.1" max="0.9" step="0.05" value="0.5">
       </div>
     </div>
   </div>
@@ -350,11 +397,16 @@
     <div class="log-scroll">
       <table class="log-table">
         <thead>
-          <tr><th>Frame</th><th>Lanes</th><th>Objects</th><th>Labels</th><th>Flag</th></tr>
+          <tr><th>Frame</th><th>Lanes</th><th>Objects</th><th>Labels</th><th>Flag</th><th>Lane Dep</th></tr>
         </thead>
         <tbody id="logBody"></tbody>
       </table>
     </div>
+  </div>
+
+  <div class="actions hidden" id="downloadActions">
+    <a href="#" class="btn disabled" id="btnDownloadVideo">↓ Download Video</a>
+    <a href="#" class="btn disabled" id="btnDownloadCsv">↓ Download CSV Log</a>
   </div>
 
 </div>
@@ -372,6 +424,24 @@ const statusText = document.getElementById('statusText');
 
 let pollTimer = null;
 let warningHistory = [];
+let currentVideoId = null;
+
+const confSlider = document.getElementById('confSlider');
+const confVal = document.getElementById('confVal');
+if (confSlider) {
+  confSlider.addEventListener('input', () => {
+    confVal.textContent = parseFloat(confSlider.value).toFixed(2);
+  });
+  confSlider.addEventListener('change', async () => {
+    if (currentVideoId) {
+      await fetch('/set_conf/' + currentVideoId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conf: parseFloat(confSlider.value) })
+      });
+    }
+  });
+}
 
 dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -401,6 +471,8 @@ async function handleFile(file) {
     return;
   }
 
+  currentVideoId = data.video_id;
+
   uploadStatus.textContent = 'streaming: ' + file.name;
   statusDot.classList.add('live');
   statusText.textContent = 'processing';
@@ -408,6 +480,7 @@ async function handleFile(file) {
   resultConsole.classList.remove('hidden');
   timelinePanel.classList.remove('hidden');
   logPanel.classList.remove('hidden');
+  document.getElementById('downloadActions').classList.add('hidden');
   streamImg.src = '/stream/' + data.video_id + '?t=' + Date.now();
 
   warningHistory = [];
@@ -481,6 +554,8 @@ async function pollLog(videoId) {
 
   document.getElementById('mFrames').textContent = String(data.frames_processed).padStart(6, '0');
   document.getElementById('mWarnings').textContent = String(data.total_warnings).padStart(6, '0');
+  document.getElementById('mLaneDeps').textContent = String(data.total_lane_departures || 0).padStart(6, '0');
+  document.getElementById('mFps').textContent = (data.avg_fps || 0).toFixed(1);
   document.getElementById('frameCounter').textContent = 'frame ' + data.frames_processed;
   document.getElementById('logCount').textContent = data.frames_processed + ' rows';
 
@@ -497,6 +572,7 @@ async function pollLog(videoId) {
       <td>${row.num_objects}</td>
       <td>${row.object_labels || '—'}</td>
       <td class="${row.warning_triggered ? 'flag-yes' : 'flag-no'}">${row.warning_triggered ? 'FLAG' : '·'}</td>
+      <td class="${row.lane_departure ? 'flag-yes' : 'flag-no'}" style="color: ${row.lane_departure ? 'var(--amber)' : ''}">${row.lane_departure ? 'DEP' : '·'}</td>
     `;
     body.appendChild(tr);
   });
@@ -509,6 +585,15 @@ async function pollLog(videoId) {
     statusDot.classList.remove('live');
     statusText.textContent = 'complete';
     uploadStatus.textContent = 'processing complete — ' + data.frames_processed + ' frames analyzed';
+    
+    document.getElementById('downloadActions').classList.remove('hidden');
+    const btnVid = document.getElementById('btnDownloadVideo');
+    const btnCsv = document.getElementById('btnDownloadCsv');
+    btnVid.href = '/download/video/' + videoId;
+    btnCsv.href = '/download/csv/' + videoId;
+    btnVid.classList.remove('disabled');
+    btnCsv.classList.remove('disabled');
+
     clearInterval(pollTimer);
   }
 }

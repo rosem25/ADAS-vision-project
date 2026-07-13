@@ -5,7 +5,7 @@ A lightweight Advanced Driver Assistance System (ADAS) perception pipeline that:
 - Detects vehicles/pedestrians (YOLOv8 if installed, otherwise a built-in fallback detector)
 - Triggers a collision-proximity warning when a detected object is large and centered (i.e. close and in-path)
 - Logs every frame's detections to a CSV for downstream analysis
-- Includes a Streamlit web app to upload a video and see results interactively
+- Includes a FastAPI + MJPEG streaming web app to upload a video and see results interactively live in the browser
 
 ## Why I built this
 Inspired by real-world ADAS/perception systems used in automotive AI (lane keeping, forward
@@ -16,7 +16,7 @@ computer vision processing → rule-based decision logic → structured logging 
 ```
 adas_lite/
 ├── adas_pipeline.py     # Core pipeline: lane detection, object detection, warning logic, logging
-├── app.py                # Streamlit demo app
+├── app.py                # FastAPI streaming backend and demo app
 ├── make_test_video.py    # Generates a synthetic test video (no external dataset needed to try it)
 ├── test_drive.mp4        # Pre-generated sample video
 ├── requirements.txt
@@ -43,9 +43,9 @@ This produces:
 
 ### Option B: Interactive web demo
 ```bash
-streamlit run app.py
+uvicorn app:app --reload
 ```
-Upload any driving video (or generate your own test clip with `make_test_video.py`) and see:
+Open `http://localhost:8000` in your browser. Upload any driving video (or generate your own test clip with `make_test_video.py`) and see:
 - Side-by-side original vs. annotated video
 - A live table of detection logs
 - Summary metrics (total warnings, average objects per frame)
@@ -90,4 +90,4 @@ To generate a fresh one: `python make_test_video.py`
   robustness on curved roads and varied lighting
 
 ## Tech stack
-Python, OpenCV, NumPy, Ultralytics YOLOv8, Streamlit, Pandas
+Python, OpenCV, NumPy, Ultralytics YOLOv8, FastAPI, Jinja2

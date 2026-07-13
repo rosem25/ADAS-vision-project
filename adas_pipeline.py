@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 import csv
+import time
 import cv2
 import numpy as np
 
@@ -50,6 +51,8 @@ def detect_lanes(frame):
 
     line_img = frame.copy()
     lane_count = 0
+    left_lines = 0
+    right_lines = 0
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line.flatten()
@@ -57,12 +60,22 @@ def detect_lanes(frame):
                 slope = (y2 - y1) / (x2 - x1)
                 if abs(slope) < 0.5:  # ignore horizontal-ish lines
                     continue
+                if slope < 0:
+                    left_lines += 1
+                else:
+                    right_lines += 1
             cv2.line(line_img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 4)
             lane_count += 1
-    return line_img, lane_count
+            
+    lane_departure = False
+    if lane_count > 0: # Only check if we are tracking lanes
+        if left_lines == 0 or right_lines == 0:
+            lane_departure = True
+
+    return line_img, lane_count, lane_departure
 
 
-def detect_objects_fallback(frame):
+def detect_objects_fallback(frame, conf_threshold=0.5):
     """
     Lightweight fallback object detector (no model download required).
     Uses color-based segmentation (HSV range) rather than a plain intensity
@@ -89,23 +102,66 @@ def detect_objects_fallback(frame):
         if area > 500:  # filter noise
             x, y, bw, bh = cv2.boundingRect(c)
             if bw < w * 0.9 and bh < h * 0.9:
-                detections.append({"label": "object", "conf": 0.5, "box": (x, y, bw, bh)})
+                if 0.5 >= conf_threshold:
+                    detections.append({"label": "object", "conf": 0.5, "id": None, "box": (x, y, bw, bh)})
     return detections
 
 
-def detect_objects_yolo(frame):
-    results = YOLO_MODEL(frame, verbose=False)[0]
+def detect_objects_yolo(frame, conf_threshold=0.5):
+    results = YOLO_MODEL.track(frame, persist=True, verbose=False)[0]
     detections = []
     for box in results.boxes:
-        x1, y1, x2, y2 = box.xyxy[0].tolist()
         conf = float(box.conf[0])
+        if conf < conf_threshold:
+            continue
+            
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
         label = YOLO_MODEL.names[int(box.cls[0])]
+        obj_id = int(box.id[0]) if box.id is not None else None
+        
         if label in ("car", "truck", "bus", "person", "motorcycle", "bicycle"):
             detections.append({
-                "label": label, "conf": conf,
+                "label": label, "conf": conf, "id": obj_id,
                 "box": (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
             })
     return detections
+
+
+CLASS_COLORS = {
+    "car": (255, 150, 0),       # Blueish
+    "truck": (200, 100, 50),
+    "bus": (200, 50, 50),
+    "person": (0, 200, 255),    # Yellowish
+    "motorcycle": (150, 50, 200),
+    "bicycle": (50, 200, 150),
+    "object": (0, 255, 255)     # Fallback
+}
+
+def annotate_frame(annotated, detections, warning, fps_value=None, lane_departure=False):
+    """Shared annotation logic to draw bounding boxes and warnings on a frame."""
+    for d in detections:
+        x, y, bw, bh = d["box"]
+        color = CLASS_COLORS.get(d["label"], (255, 255, 0))
+        cv2.rectangle(annotated, (x, y), (x + bw, y + bh), color, 2)
+        
+        label_text = f"{d['label']} {d['conf']:.2f}"
+        if d.get("id") is not None:
+            label_text = f"ID:{d['id']} " + label_text
+            
+        cv2.putText(annotated, label_text, (x, y - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    if warning:
+        cv2.putText(annotated, "WARNING: OBJECT CLOSE", (30, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                    
+    if lane_departure:
+        cv2.putText(annotated, "LANE DEPARTURE", (30, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 3) # Orange
+                    
+    if fps_value is not None:
+        cv2.putText(annotated, f"FPS: {fps_value:.1f}", (annotated.shape[1] - 120, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 255, 150), 2)
 
 
 def check_warning(detections, frame_shape):
@@ -137,27 +193,22 @@ def run_pipeline(input_path, output_path, log_path):
     frame_idx = 0
 
     while True:
+        start_time = time.time()
         ret, frame = cap.read()
         if not ret:
             break
 
-        annotated, lane_count = detect_lanes(frame)
+        annotated, lane_count, lane_departure = detect_lanes(frame)
 
         if USE_YOLO:
-            detections = detect_objects_yolo(frame)
+            detections = detect_objects_yolo(frame, conf_threshold=0.5)
         else:
-            detections = detect_objects_fallback(frame)
-
-        for d in detections:
-            x, y, bw, bh = d["box"]
-            cv2.rectangle(annotated, (x, y), (x + bw, y + bh), (255, 0, 0), 2)
-            cv2.putText(annotated, f"{d['label']} {d['conf']:.2f}", (x, y - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            detections = detect_objects_fallback(frame, conf_threshold=0.5)
 
         warning, warn_obj = check_warning(detections, frame.shape)
-        if warning:
-            cv2.putText(annotated, "WARNING: OBJECT CLOSE", (30, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+        
+        fps_value = 1.0 / (time.time() - start_time) if (time.time() - start_time) > 0 else 0
+        annotate_frame(annotated, detections, warning, fps_value, lane_departure)
 
         log_rows.append({
             "frame": frame_idx,
@@ -165,6 +216,7 @@ def run_pipeline(input_path, output_path, log_path):
             "num_objects": len(detections),
             "object_labels": ";".join(d["label"] for d in detections),
             "warning_triggered": warning,
+            "lane_departure": lane_departure,
         })
 
         out.write(annotated)
